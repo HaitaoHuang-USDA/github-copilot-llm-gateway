@@ -116,11 +116,18 @@ function processStreamChunk(
     reporter.reportThinking(chunk.reasoning_content);
   }
 
-  if (chunk.content) {
+  // Use a nullish check so we still handle chunks where `content` is an empty
+  // string ("") or explicitly undefined. The previous truthy check skipped the
+  // final chunk when the model emitted no `content` field, which could cause
+  // the stream to be considered empty even after earlier text parts. By checking
+  // `!= null` we treat `null` and `undefined` as absent but allow an empty
+  // string to pass through, ensuring the reasoning field reset logic runs.
+  if (chunk.content != null) {
     if (inReasoningField) {
       inReasoningField = false;
       reporter.reportThinkingDone();
     }
+    // `chunk.content` may be an empty string; length will be 0 which is fine.
     stats.totalContentLength += chunk.content.length;
     for (const piece of parser.process(chunk.content)) {
       reportParserPiece(piece, reporter, stats, false);
