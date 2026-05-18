@@ -1,0 +1,191 @@
+{
+  "name": "github-copilot-llm-gateway",
+  "displayName": "GitHub Copilot LLM Gateway",
+  "description": "Connect GitHub Copilot to open-source models via vLLM or any OpenAI-compatible server",
+  "version": "1.0.6",
+  "publisher": "AndrewButson",
+  "icon": "assets/copilot-llm-gateway.png",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arbs-io/github-copilot-llm-gateway.git"
+  },
+  "sponsor": {
+    "url": "https://github.com/sponsors/arbs-io"
+  },
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run esbuild-base -- --minify",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+    "test-compile": "tsc -p ./",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test-build": "tsc -p tsconfig.test.json",
+    "test": "npm run test-build && node --test \"out-test/__tests__/*.test.js\"",
+    "test-coverage": "npm run test-build && node --test --experimental-test-coverage \"out-test/__tests__/*.test.js\"",
+    "deploy": "vsce publish --no-yarn",
+    "package": "vsce package --no-yarn"
+  },
+  "categories": [
+    "AI",
+    "Machine Learning",
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "copilot",
+    "vllm",
+    "Ollama",
+    "llama.cpp",
+    "LocalAI"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "copilot-llm-gateway",
+        "displayName": "LLM Gateway",
+        "managementCommand": "github.copilot.llm-gateway.manage",
+        "configuration": {
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "secret": true,
+              "title": "API Key",
+              "description": "Optional bearer token sent to the inference server. Leave blank for unauthenticated local servers (vLLM, Ollama, llama.cpp). Stored by VS Code; takes precedence over the 'Configure Server' command's SecretStorage entry."
+            }
+          }
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "github.copilot.llm-gateway.manage",
+        "title": "Configure Server",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.testConnection",
+        "title": "Test Server Connection",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.refreshModels",
+        "title": "Refresh Models",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.editCustomHeaders",
+        "title": "Edit Custom Headers",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.showOutput",
+        "title": "Show Output Log",
+        "category": "GitHub Copilot LLM Gateway"
+      }
+    ],
+    "configuration": {
+      "title": "GitHub Copilot LLM Gateway",
+      "properties": {
+        "github.copilot.llm-gateway.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Inference server URL (OpenAI API compatible endpoint)",
+          "order": 1
+        },
+        "github.copilot.llm-gateway.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Deprecated. Use the 'Configure Server' command to store the API key in VS Code's secret storage. Any value entered here is migrated and cleared on extension activation.",
+          "deprecationMessage": "API keys are now stored in VS Code's secret storage. Use the 'GitHub Copilot LLM Gateway: Configure Server' command to set the API key.",
+          "order": 2
+        },
+        "github.copilot.llm-gateway.requestTimeout": {
+          "type": "number",
+          "default": 60000,
+          "description": "Request timeout in milliseconds",
+          "order": 3
+        },
+        "github.copilot.llm-gateway.defaultMaxTokens": {
+          "type": "number",
+          "default": 262144,
+          "description": "Fallback context window size (input tokens) when the server does not report it",
+          "order": 4
+        },
+        "github.copilot.llm-gateway.defaultMaxOutputTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "Fallback maximum output tokens when the server does not report context size",
+          "order": 5
+        },
+        "github.copilot.llm-gateway.enableImageInput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable image input capability for models that support multimodal requests",
+          "order": 6
+        },
+        "github.copilot.llm-gateway.enableToolCalling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable tool calling capability for models",
+          "order": 7
+        },
+        "github.copilot.llm-gateway.parallelToolCalling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow model to call multiple tools in parallel (disable if model has issues with parallel calls)",
+          "order": 8
+        },
+        "github.copilot.llm-gateway.agentTemperature": {
+          "type": "number",
+          "default": 0.0,
+          "minimum": 0.0,
+          "maximum": 2.0,
+          "description": "Temperature for agent/tool calling mode (lower = more consistent tool call formatting). Set to 0.0 for best results with fine-tuned models.",
+          "order": 9
+        },
+        "github.copilot.llm-gateway.verboseLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, the full chat request body (including messages and tool args) is written to the output channel. Keep disabled unless you are reproducing an issue — captured logs may contain conversation content from the user's current editor.",
+          "order": 10
+        },
+        "github.copilot.llm-gateway.customHeaders": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Deprecated. Use the 'Edit Custom Headers' command to store headers in VS Code's secret storage. Any value entered here is migrated and cleared on extension activation.",
+          "deprecationMessage": "Custom headers (which may carry credentials such as 'Authorization') are now stored in VS Code's secret storage. Use the 'GitHub Copilot LLM Gateway: Edit Custom Headers' command.",
+          "order": 11
+        },
+        "github.copilot.llm-gateway.extraModelOptions": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": true,
+          "description": "Extra parameters merged into the chat-completions request body (e.g. top_k, repetition_penalty, seed). Per-request modelOptions from the caller take precedence. Edit in settings.json for non-string values.",
+          "order": 12
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "@types/vscode": "^1.120.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.4.0",
+    "typescript": "^6.0.3"
+  }
+}
