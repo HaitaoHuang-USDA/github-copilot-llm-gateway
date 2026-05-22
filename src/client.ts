@@ -426,11 +426,12 @@ export class GatewayClient {
 
     // Handle final chunks with finish_reason but no delta/message payload.
     // Some models (e.g., reasoning models) send a final chunk with only
-    // finish_reason and accumulated tool_calls; we must drain those calls
-    // even though there's no content to yield.
+    // finish_reason and no content. We MUST drain accumulated tool calls,
+    // but only yield if there's something meaningful to send.
     if (chunk.finishReason === 'stop' || chunk.finishReason === 'length') {
       const finishedToolCalls = accumulator.drain();
-      if (finishedToolCalls.length > 0) {
+      // Only yield if we have tool calls or usage data; don't yield empty chunks
+      if (finishedToolCalls.length > 0 || usage) {
         return {
           content: '',
           reasoning_content: '',

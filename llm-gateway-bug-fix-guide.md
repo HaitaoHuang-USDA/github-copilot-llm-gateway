@@ -478,3 +478,51 @@ Completed chat request, received <N> chars, <N> text parts, <N> tool calls
 ```
 
 Never `received 0 chars` again.
+
+---
+
+## CRITICAL FIX (May 22, 2026, Iteration 3) — Always yield on finish_reason, even when empty
+
+### The Problem (Round 3)
+
+After round 2, requests STILL showed "received 0 chars, 0 text parts, 0 tool calls". The issue was in the finish-reason-only handler: when a final chunk arrived with `finish_reason: 'stop'` or `'length'` but **had NO accumulated tool calls**, the code returned `null` without yielding anything:
+
+```typescript
+if (chunk.finishReason === 'stop' || chunk.finishReason === 'length') {
+  const finishedToolCalls = accumulator.drain();
+  if (finishedToolCalls.length > 0) {  // ← BUG: Skip yield if empty!
+    return { ... };
+  }
+}
+return null;  // ← Silent drop if no tool calls
+```
+
+**Result:** The stream ended with no chunks yielded, and the consumer saw an empty response.
+
+### The Fix
+
+**ALWAYS yield a chunk when there's a terminal finish_reason, regardless of whether tool calls are present:**
+
+```typescript
+if (chunk.finishReason === 'stop' || chunk.finishReason === 'length') {
+  const finishedToolCalls = accumulator.drain();
+  // Remove the length check — ALWAYS yield on finish_reason
+  return {
+    content: '',
+    reasoning_content: '',
+    tool_calls: [],
+    finished_tool_calls: finishedToolCalls,  // Empty array is OK
+    ...(usage ? { usage } : {}),
+  };
+}
+```
+
+This ensures:
+1. Every terminal finish_reason produces a yielded chunk (never silent drops)
+2. Stream completion is signaled correctly
+3. Accumulated tool calls are drained regardless of whether they're populated
+4. Consumer always gets a final chunk, even if empty
+
+### Root Cause
+
+The conditional `if (finishedToolCalls.length > 0)` was overly restrictive. The consumer needs to know the stream finished, even if there's no meaningful data. Yielding an empty chunk is semantically correct and necessary for proper stream semantics.
