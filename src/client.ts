@@ -284,7 +284,7 @@ export class GatewayClient {
     resetInactivity: () => void
   ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
     const reader = body.getReader();
-    const decoder = new TextDecoder();
+    const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
     while (true) {

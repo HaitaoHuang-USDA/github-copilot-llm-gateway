@@ -67,6 +67,57 @@ const FORCE_CLOSED_THINKING_FALLBACK =
   'or disable thinking for this model.)*';
 
 /**
+ * Find a safe place to split text, preferring natural boundaries like newlines/spaces.
+ * Avoids splitting emoji or multi-codepoint sequences.
+ */
+function findSafeFlushPoint(text: string, maxLength: number): number {
+  if (text.length <= maxLength) return text.length;
+  
+  // First, try to find a newline before maxLength (safest split)
+  let lastNewline = text.lastIndexOf('\n', maxLength);
+  if (lastNewline > 0 && lastNewline > maxLength - 100) {
+    return lastNewline + 1; // Include the newline
+  }
+  
+  // Second, try to find whitespace before maxLength
+  let searchEnd = Math.min(maxLength, text.length);
+  while (searchEnd > 0) {
+    const char = text[searchEnd - 1];
+    if (char === ' ' || char === '\t' || char === '\n') {
+      return searchEnd;
+    }
+    searchEnd--;
+    
+    // If we've searched back 50 chars and found nothing, give up and use maxLength
+    if (maxLength - searchEnd > 50) {
+      break;
+    }
+  }
+  
+  // Last resort: split at maxLength but back up from emoji sequences
+  let pos = maxLength;
+  while (pos > Math.max(1, maxLength - 10)) {
+    const code = text.charCodeAt(pos - 1);
+    
+    // Low surrogate: part of surrogate pair, back up
+    if (code >= 0xDC00 && code <= 0xDFFF) {
+      pos -= 2;
+      continue;
+    }
+    
+    // Variation selector or zero-width joiner: include with base char
+    if (code === 0xFE0F || code === 0x200D) {
+      pos -= 1;
+      continue;
+    }
+    
+    break;
+  }
+  
+  return Math.max(1, pos);
+}
+
+/**
  * Dispatch a single ThinkingParser piece to the reporter, updating stats.
  *
  * `allowForceClose` is true only when flushing the parser at end-of-stream —
@@ -162,9 +213,10 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
   let inReasoningField = false;
   // Buffer to accumulate small text pieces before reporting.
   // Prevents word-per-line rendering when gateway sends token-by-token.
-  // Use a larger threshold (512 chars) to ensure early chunks are buffered.
+  // Use a conservative threshold (1024 chars) to ensure complete emoji sequences.
   let textBuffer = '';
-  const BUFFER_THRESHOLD = 512; // More aggressive buffering
+  let emojiBuffer = ''; // Separate buffer for emoji chunks that need combining
+  const BUFFER_THRESHOLD = 1024; // Conservative buffering for emoji safety
 
   for await (const chunk of chunks) {
     if (isCancelled()) {
@@ -173,21 +225,52 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
     
     // Accumulate content in buffer
     if (chunk.content != null && chunk.content.length > 0) {
-      textBuffer += chunk.content;
+      // Check if this chunk is pure emoji or combining marks
+      // Matches:
+      // 1. Surrogate pairs (outside BMP): \uD800-\uDBFF followed by \uDC00-\uDFFF
+      // 2. BMP emoji ranges: \u2600-\u27BF (Miscellaneous Symbols, Dingbats), \u2300-\u23FF, \u2B50-\u2BFF
+      // 3. Variation selectors and zero-width joiners: \uFE0F, \u200D
+      const isEmojiOnlyChunk = /^(?:[\uD800-\uDBFF][\uDC00-\uDFFF]|[\u2300-\u23FF]|[\u2600-\u27BF]|[\u2B50-\u2BFF]|[\uFE0F\u200D])+$/.test(chunk.content);
       
-      // Only report when buffer reaches threshold, unless we're at end or have other events
-      if (textBuffer.length >= BUFFER_THRESHOLD) {
-        // Process buffered content through parser and report
-        for (const piece of parser.process(textBuffer)) {
-          reportParserPiece(piece, reporter, stats, false);
+      if (isEmojiOnlyChunk) {
+        // Accumulate emoji in separate buffer to keep them together
+        emojiBuffer += chunk.content;
+      } else {
+        // Non-emoji chunk: flush emoji buffer first, then handle text
+        if (emojiBuffer.length > 0) {
+          for (const piece of parser.process(emojiBuffer)) {
+            reportParserPiece(piece, reporter, stats, false);
+          }
+          emojiBuffer = '';
         }
-        textBuffer = '';
+        
+        // Add to text buffer
+        textBuffer += chunk.content;
+        
+        // Flush when buffer reaches threshold
+        if (textBuffer.length >= BUFFER_THRESHOLD) {
+          const flushPoint = findSafeFlushPoint(textBuffer, BUFFER_THRESHOLD);
+          const pointToFlush = flushPoint > 0 ? flushPoint : textBuffer.length;
+          const toReport = textBuffer.slice(0, pointToFlush);
+          textBuffer = textBuffer.slice(pointToFlush);
+          
+          for (const piece of parser.process(toReport)) {
+            reportParserPiece(piece, reporter, stats, false);
+          }
+        }
       }
     }
     
     // Handle reasoning content (report immediately, don't buffer)
     if (chunk.reasoning_content) {
-      // Flush any buffered text first
+      // Flush any buffered text and emoji first
+      if (emojiBuffer.length > 0) {
+        for (const piece of parser.process(emojiBuffer)) {
+          reportParserPiece(piece, reporter, stats, false);
+        }
+        emojiBuffer = '';
+      }
+      
       if (textBuffer.length > 0) {
         for (const piece of parser.process(textBuffer)) {
           reportParserPiece(piece, reporter, stats, false);
@@ -200,8 +283,15 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
       reporter.reportThinking(chunk.reasoning_content);
     }
     
-    // Handle tool calls and usage (report immediately, flush buffer first)
+    // Handle tool calls and usage (report immediately, flush buffers first)
     if (chunk.finished_tool_calls?.length || chunk.usage) {
+      if (emojiBuffer.length > 0) {
+        for (const piece of parser.process(emojiBuffer)) {
+          reportParserPiece(piece, reporter, stats, false);
+        }
+        emojiBuffer = '';
+      }
+      
       if (textBuffer.length > 0) {
         for (const piece of parser.process(textBuffer)) {
           reportParserPiece(piece, reporter, stats, false);
@@ -231,6 +321,12 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
 
   // Flush any remaining buffered content. 'E' pieces here signal that the
   // stream ended mid-think block.
+  if (emojiBuffer.length > 0) {
+    for (const piece of parser.process(emojiBuffer)) {
+      reportParserPiece(piece, reporter, stats, false);
+    }
+  }
+  
   if (textBuffer.length > 0) {
     for (const piece of parser.process(textBuffer)) {
       reportParserPiece(piece, reporter, stats, false);

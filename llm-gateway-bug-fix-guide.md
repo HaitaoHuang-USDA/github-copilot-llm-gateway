@@ -322,6 +322,138 @@ token overhead roughly in half.
 
 ---
 
+# Additional Fixes: Rendering Issues (May 2026)
+
+## Issue 1: Word-Per-Line Rendering ("token-by-token" display)
+
+### Root Cause
+The gateway sends extremely granular SSE chunks (1-9 characters each). Each chunk was reported individually to VS Code's `LanguageModelTextPart`, causing each fragment to render as a separate text line, making the response appear word-by-word vertically.
+
+Example:
+```
+[CHUNK] "The" (len=3)
+[CHUNK] " " (len=1)
+[CHUNK] "quick" (len=5)
+→ Rendered as:
+The
+ 
+quick
+```
+
+### Solution
+Implement buffering in `src/responseStreamer.ts`:
+- Accumulate chunks in a `textBuffer` until 1024 characters collected
+- Find safe flush points (prefer newlines, then whitespace, avoid UTF-16 surrogate pairs)
+- Report batched chunks to VS Code instead of individual fragments
+
+**Key code** (in `streamResponse()` function):
+```typescript
+const BUFFER_THRESHOLD = 1024;
+let textBuffer = '';
+
+// Accumulate chunks until threshold reached
+textBuffer += chunk.content;
+if (textBuffer.length >= BUFFER_THRESHOLD) {
+  const flushPoint = findSafeFlushPoint(textBuffer, BUFFER_THRESHOLD);
+  const toReport = textBuffer.slice(0, flushPoint);
+  textBuffer = textBuffer.slice(flushPoint);
+  
+  for (const piece of parser.process(toReport)) {
+    reportParserPiece(piece, reporter, stats, false);
+  }
+}
+```
+
+### Status
+✅ **FIXED** — Responses now render normally with proper line breaks.
+
+---
+
+## Issue 2: Emoji Rendering as Boxes
+
+### Root Cause
+Unicode emoji with variation selectors (like 🛠️ U+1F6E0 U+FE0F, ⚙️ U+2699 U+FE0F) arrive in separate chunks:
+- Chunk 1: base emoji (e.g., 🛠 U+1F6E0)
+- Chunk 2: variation selector (U+FE0F)
+
+Additionally, BMP emoji like ✅ (U+2705) and ❌ (U+274C) were not detected as emoji at all, causing them to be buffered as regular text.
+
+The original emoji detection regex only matched UTF-16 surrogate pairs:
+```typescript
+// OLD: Only caught surrogate pairs, missed BMP emoji
+const isEmojiOnlyChunk = /^[\uD800-\uDBFF][\uDC00-\uDFFF]*[\uFE0F\u200D]*$/.test(chunk.content);
+```
+
+Result: Emoji with variation selectors were split across chunks and reported separately, causing rendering as boxes in some fonts.
+
+### Solution
+1. **Expand emoji detection** to include BMP emoji ranges:
+   ```typescript
+   const isEmojiOnlyChunk = /^(?:
+     [\uD800-\uDBFF][\uDC00-\uDFFF] |     // Surrogate pairs (outside BMP)
+     [\u2300-\u23FF] |                    // Miscellaneous Technical
+     [\u2600-\u27BF] |                    // Miscellaneous Symbols + Dingbats (✅, ❌, etc.)
+     [\u2B50-\u2BFF] |                    // Miscellaneous Symbols and Pictographs
+     [\uFE0F\u200D]                       // Variation selectors + zero-width joiners
+   )+$/.test(chunk.content);
+   ```
+
+2. **Implement emoji buffering** (separate from text buffer):
+   ```typescript
+   let emojiBuffer = '';
+   
+   if (isEmojiOnlyChunk) {
+     // Accumulate emoji chunks
+     emojiBuffer += chunk.content;
+   } else {
+     // Non-emoji: flush emoji buffer first (as single piece)
+     if (emojiBuffer.length > 0) {
+       for (const piece of parser.process(emojiBuffer)) {
+         reportParserPiece(piece, reporter, stats, false);
+       }
+       emojiBuffer = '';
+     }
+     // Then process text normally
+   }
+   ```
+
+### Status
+✅ **FIXED** — All emoji now display correctly, including:
+- Emoji with variation selectors: 🛠️, ⚙️, 🗂️, 🖥️
+- BMP emoji: ✅, ❌
+- Standard emoji: 😀, 🚀, 📁, 🔧, 💡, 🧩, 🐍, 🧪
+
+### Note on Linux Font Issues
+Even with code fixes, emoji may render as boxes on Linux if no emoji font is installed. Solution:
+```bash
+# Install Noto Color Emoji locally (no sudo)
+mkdir -p ~/.fonts
+wget -O ~/.fonts/NotoColorEmoji.ttf \
+  https://github.com/googlei18n/noto-emoji/raw/main/fonts/NotoColorEmoji.ttf
+fc-cache -fv ~/.fonts
+
+# Configure in VS Code settings.json:
+{
+  "editor.fontFamily": "'Noto Color Emoji', 'Fira Code', monospace"
+}
+```
+
+---
+
+## Build & Deployment
+
+All fixes are in `src/responseStreamer.ts`. Build and deploy:
+```bash
+npm run esbuild-watch   # or: npm run compile
+# Built extension: out/extension.js (~109KB)
+cp out/extension.js* ~/.vscode/extensions/andrewbutson.github-copilot-llm-gateway-1.0.6/out/
+```
+
+Reload VS Code: `Ctrl+Shift+P` → "Developer: Reload Window"
+```
+
+---
+
 ## SOLUTION APPLIED (May 21, 2026)
 
 The root cause has been identified and patched in the source code.
