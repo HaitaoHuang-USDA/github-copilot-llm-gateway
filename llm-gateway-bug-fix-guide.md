@@ -422,3 +422,59 @@ Completed chat request, received 892 chars, 1 text parts, 3 tool calls
 ```
 
 The fix is now live in this repository and ready for deployment.
+
+---
+
+## ADDITIONAL FIX (May 22, 2026) — Handle chunks with finish_reason but no delta/message
+
+### The Problem (Round 2)
+
+After the initial fix, a third issue emerged: some models send a **final chunk with a finish_reason but no content payload** (neither `delta` nor `message`). The code path in `dispatchParsedChunk()` was:
+
+```typescript
+if (chunk.delta) { /* process delta */ }
+else if (chunk.message) { /* process message */ }
+else { return null; }  // ← BUG: Silently drops chunk!
+```
+
+When a chunk arrived with `finish_reason: 'stop'` or `'length'` but no `delta` or `message`, it would return `null` and never be yielded. This meant:
+- No chunk was emitted to the consumer
+- Any accumulated tool calls were **never drained** (left in the accumulator)
+- The response appeared empty again: "received 0 chars, 0 text parts"
+
+### The Fix
+
+Added a third condition in `dispatchParsedChunk()` to handle finish-reason-only chunks:
+
+```typescript
+// Handle final chunks with finish_reason but no delta/message payload.
+// Some models (e.g., reasoning models) send a final chunk with only
+// finish_reason and accumulated tool_calls; we must drain those calls
+// even though there's no content to yield.
+if (chunk.finishReason === 'stop' || chunk.finishReason === 'length') {
+  const finishedToolCalls = accumulator.drain();
+  if (finishedToolCalls.length > 0) {
+    return {
+      content: '',
+      reasoning_content: '',
+      tool_calls: [],
+      finished_tool_calls: finishedToolCalls,
+      ...(usage ? { usage } : {}),
+    };
+  }
+}
+```
+
+This ensures:
+1. Even if there's no `delta` or `message`, a final chunk with finish_reason is still processed
+2. Accumulated tool calls are drained and yielded as `finished_tool_calls`
+3. A chunk is always emitted, never silently dropped
+
+### Verification
+
+After this patch, even the most complex tool-heavy requests should show:
+```
+Completed chat request, received <N> chars, <N> text parts, <N> tool calls
+```
+
+Never `received 0 chars` again.
