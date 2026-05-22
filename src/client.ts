@@ -405,6 +405,9 @@ export class GatewayClient {
 
     if (chunk.delta) {
       const { content, reasoningContent, finishedToolCalls } = this.applyDeltaChoice(chunk, accumulator);
+      if (content.length > 0) {
+        this.log(`[CHUNK] delta content="${content}" (len=${content.length}, has_newline=${content.includes('\n')})`);
+      }
       return {
         content,
         reasoning_content: reasoningContent,
@@ -415,6 +418,9 @@ export class GatewayClient {
     }
     if (chunk.message) {
       const { content, reasoningContent, finishedToolCalls } = this.applyMessageChoice(chunk, accumulator);
+      if (content.length > 0) {
+        this.log(`[CHUNK] message content="${content}" (len=${content.length}, has_newline=${content.includes('\n')})`);
+      }
       return {
         content,
         reasoning_content: reasoningContent,

@@ -99,7 +99,7 @@ function reportParserPiece(
 
 /**
  * Process a single stream chunk, updating stats and dispatching events
- * through the reporter.
+ * through the reporter. Text content buffering is handled in streamResponse().
  * @returns updated inReasoningField flag.
  */
 function processStreamChunk(
@@ -116,22 +116,13 @@ function processStreamChunk(
     reporter.reportThinking(chunk.reasoning_content);
   }
 
-  // Use a nullish check so we still handle chunks where `content` is an empty
-  // string ("") or explicitly undefined. The previous truthy check skipped the
-  // final chunk when the model emitted no `content` field, which could cause
-  // the stream to be considered empty even after earlier text parts. By checking
-  // `!= null` we treat `null` and `undefined` as absent but allow an empty
-  // string to pass through, ensuring the reasoning field reset logic runs.
+  // Content is buffered in streamResponse(), so we don't process it here
   if (chunk.content != null) {
     if (inReasoningField) {
       inReasoningField = false;
       reporter.reportThinkingDone();
     }
-    // `chunk.content` may be an empty string; length will be 0 which is fine.
     stats.totalContentLength += chunk.content.length;
-    for (const piece of parser.process(chunk.content)) {
-      reportParserPiece(piece, reporter, stats, false);
-    }
   }
 
   if (chunk.finished_tool_calls?.length) {
@@ -143,9 +134,6 @@ function processStreamChunk(
   }
 
   if (chunk.usage && !stats.reportedUsage) {
-    // Latch on the first usage frame; some servers re-emit the same totals
-    // across the trailing few chunks. Reporting twice would briefly double
-    // VS Code's running context-window count before settling.
     stats.reportedUsage = true;
     reporter.reportUsage(chunk.usage);
   }
@@ -172,18 +160,83 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
 
   const parser = new ThinkingParser();
   let inReasoningField = false;
+  // Buffer to accumulate small text pieces before reporting.
+  // Prevents word-per-line rendering when gateway sends token-by-token.
+  // Use a larger threshold (512 chars) to ensure early chunks are buffered.
+  let textBuffer = '';
+  const BUFFER_THRESHOLD = 512; // More aggressive buffering
 
   for await (const chunk of chunks) {
     if (isCancelled()) {
       break;
     }
-    inReasoningField = processStreamChunk(
-      chunk, parser, reporter, stats, inReasoningField, resolveToolCallArgs
-    );
+    
+    // Accumulate content in buffer
+    if (chunk.content != null && chunk.content.length > 0) {
+      textBuffer += chunk.content;
+      
+      // Only report when buffer reaches threshold, unless we're at end or have other events
+      if (textBuffer.length >= BUFFER_THRESHOLD) {
+        // Process buffered content through parser and report
+        for (const piece of parser.process(textBuffer)) {
+          reportParserPiece(piece, reporter, stats, false);
+        }
+        textBuffer = '';
+      }
+    }
+    
+    // Handle reasoning content (report immediately, don't buffer)
+    if (chunk.reasoning_content) {
+      // Flush any buffered text first
+      if (textBuffer.length > 0) {
+        for (const piece of parser.process(textBuffer)) {
+          reportParserPiece(piece, reporter, stats, false);
+        }
+        textBuffer = '';
+      }
+      
+      stats.hadThinking = true;
+      inReasoningField = true;
+      reporter.reportThinking(chunk.reasoning_content);
+    }
+    
+    // Handle tool calls and usage (report immediately, flush buffer first)
+    if (chunk.finished_tool_calls?.length || chunk.usage) {
+      if (textBuffer.length > 0) {
+        for (const piece of parser.process(textBuffer)) {
+          reportParserPiece(piece, reporter, stats, false);
+        }
+        textBuffer = '';
+      }
+      
+      if (inReasoningField) {
+        inReasoningField = false;
+        reporter.reportThinkingDone();
+      }
+    }
+    
+    if (chunk.finished_tool_calls?.length) {
+      for (const toolCall of chunk.finished_tool_calls) {
+        stats.totalToolCalls++;
+        const args = resolveToolCallArgs(toolCall);
+        reporter.reportToolCall(toolCall.id, toolCall.name, args);
+      }
+    }
+
+    if (chunk.usage && !stats.reportedUsage) {
+      stats.reportedUsage = true;
+      reporter.reportUsage(chunk.usage);
+    }
   }
 
   // Flush any remaining buffered content. 'E' pieces here signal that the
   // stream ended mid-think block.
+  if (textBuffer.length > 0) {
+    for (const piece of parser.process(textBuffer)) {
+      reportParserPiece(piece, reporter, stats, false);
+    }
+  }
+  
   for (const piece of parser.flush()) {
     reportParserPiece(piece, reporter, stats, true);
   }
