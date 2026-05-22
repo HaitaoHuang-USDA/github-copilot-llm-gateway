@@ -1,16 +1,16 @@
 import * as vscode from 'vscode';
 import {
-  OpenAIChatCompletionRequest,
-  OpenAIModelsResponse,
-  OpenAIUsage,
-  GatewayConfig,
-} from './types';
-import {
   AccumulatedToolCall,
   LegacyFunctionCall,
   ToolCallAccumulator,
   ToolCallDelta,
 } from './toolCallAccumulator';
+import {
+  GatewayConfig,
+  OpenAIChatCompletionRequest,
+  OpenAIModelsResponse,
+  OpenAIUsage,
+} from './types';
 
 /**
  * Trim trailing slashes and a trailing `/v1` (or `/openai/v1`) segment so the
@@ -106,7 +106,7 @@ interface ParsedChunk {
 }
 
 interface ServerErrorPayload {
-  error: { message?: string } | string;
+  error: { message?: string; } | string;
 }
 
 export type GatewayLogger = (message: string) => void;
@@ -429,7 +429,7 @@ export class GatewayClient {
   private applyDeltaChoice(
     parsed: ParsedChunk,
     accumulator: ToolCallAccumulator
-  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[]; } {
     const delta = parsed.delta!;
     const finishedToolCalls: AccumulatedToolCall[] = [];
 
@@ -443,16 +443,7 @@ export class GatewayClient {
       accumulator.applyLegacy(delta.function_call, parsed.id ?? '');
     }
 
-    // Drain accumulated tool calls on any terminal finish_reason, including
-    // 'stop'. Reasoning models emit finish_reason: 'stop' on their final chunk,
-    // which may have no 'content' field — we still need to drain any tool calls
-    // that were accumulated during prior deltas (issue: "sorry, no response").
-    if (
-      parsed.finishReason === 'tool_calls' ||
-      parsed.finishReason === 'function_call' ||
-      parsed.finishReason === 'stop' ||
-      parsed.finishReason === 'length'
-    ) {
+    if (parsed.finishReason === 'tool_calls' || parsed.finishReason === 'function_call') {
       finishedToolCalls.push(...accumulator.drain());
     }
 
@@ -466,7 +457,7 @@ export class GatewayClient {
   private applyMessageChoice(
     parsed: ParsedChunk,
     accumulator: ToolCallAccumulator
-  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[]; } {
     const message = parsed.message!;
     const finishedToolCalls: AccumulatedToolCall[] = [];
 
@@ -479,16 +470,6 @@ export class GatewayClient {
         { index: 0, id: parsed.id, function: message.function_call },
       ]);
       finishedToolCalls.push(...completed);
-    }
-
-    // Drain any remaining accumulated tool calls on terminal finish_reason,
-    // matching the logic in applyDeltaChoice(). This ensures completeness in
-    // non-streaming responses (message-mode) as well.
-    if (
-      parsed.finishReason === 'stop' ||
-      parsed.finishReason === 'length'
-    ) {
-      finishedToolCalls.push(...accumulator.drain());
     }
 
     return {

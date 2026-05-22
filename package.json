@@ -15,7 +15,7 @@
     "url": "https://github.com/sponsors/arbs-io"
   },
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.117.0"
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",
@@ -180,7 +180,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
-    "@types/vscode": "^1.120.0",
+    "@types/vscode": "^1.117.0",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
     "@typescript-eslint/parser": "^8.59.3",
     "@vscode/vsce": "^3.9.1",
